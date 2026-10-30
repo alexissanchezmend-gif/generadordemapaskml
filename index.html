@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 /* Layout: consola de despacho — totales del día y EDT arriba, panel de rutas a la izquierda, plano/resumen a la derecha */
@@ -151,6 +152,9 @@ body.dragging .drop{display:grid}
 .modal p{margin:0;font-size:14px;color:var(--muted);line-height:1.45}
 .modal p b{color:var(--ink)}
 .modal textarea{width:100%;height:140px;font:11px var(--f-mono);background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:8px;resize:vertical}
+.fld{display:flex;flex-direction:column;gap:4px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+.fld input{font:15px var(--f-body);padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);text-transform:none;letter-spacing:0}
+#lgErr{color:var(--warn);font-size:13px;min-height:1em}
 .modal .row{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:6px;font-size:14px;z-index:10;max-width:calc(100% - 32px)}
 
@@ -223,6 +227,14 @@ td button{font-size:12px;padding:4px 8px}
 </main>
 <div class="drop">Suelta la hoja de ruta para cargarla</div>
 <div class="toast" id="toast" hidden></div>
+<div class="modal" id="loginBox" hidden role="dialog" aria-modal="true" aria-labelledby="lgTitle"><form class="card" id="lgForm">
+  <h3 id="lgTitle">Iniciar sesión para publicar</h3>
+  <p>Solo quien publica la hoja del día necesita iniciar sesión. El resto del equipo la ve con el enlace.</p>
+  <label class="fld" for="lgEmail">Correo<input type="email" id="lgEmail" autocomplete="username" required></label>
+  <label class="fld" for="lgPass">Contraseña<input type="password" id="lgPass" autocomplete="current-password" required></label>
+  <span class="w" id="lgErr" role="alert"></span>
+  <div class="row"><button type="button" id="lgClose">Cancelar</button><button type="submit" class="primary">Entrar</button></div>
+</form></div>
 <div class="modal" id="copyBox" hidden role="dialog" aria-modal="true" aria-labelledby="copyTitle"><div class="card">
   <h3 id="copyTitle">KML de la ruta</h3>
   <p id="copyText"></p>
@@ -280,6 +292,11 @@ let DL=null;
 function toast(t,ms=3200){const el=$('#toast');el.textContent=t;el.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>el.hidden=true,ms)}
 
 /* ---------- días: compartidos con el equipo (db) o, si no hay, en este navegador ---------- */
+/* ---------- Supabase: pega aquí los datos de tu proyecto (Settings → API) ---------- */
+const SUPABASE_URL='';       // ejemplo: https://abcdefghijkl.supabase.co
+const SUPABASE_ANON_KEY='';  // clave "anon public"
+const SB_TABLE='hojas_ruta';
+let SB=null,SBUSER=null,SBDAYS={};
 let DB=null,SHARED={},CACHE={},picked=false;
 const CHUNK=400,KEEP_DAYS=30;
 function loadDays(){try{return JSON.parse(localStorage.getItem(STORE)||'{}')}catch(e){return{}}}
@@ -287,10 +304,14 @@ function saveLocal(day){
   try{const all=loadDays();all[day.fecha]=day;const keys=Object.keys(all).sort().reverse();keys.slice(7).forEach(k=>delete all[k]);
     localStorage.setItem(STORE,JSON.stringify(all));return true}catch(e){return false}
 }
-function allDays(){const d=DB?{...SHARED}:loadDays();if(BASE&&!d[BASE.fecha])d[BASE.fecha]=BASE;return d}
+function allDays(){if(SB)return{...SBDAYS};const d=DB?{...SHARED}:loadDays();if(BASE&&!d[BASE.fecha])d[BASE.fecha]=BASE;return d}
 function renderDaySel(){
   const d=allDays(),keys=Object.keys(d).sort().reverse();
   $('#daySel').innerHTML=keys.map(k=>`<option value="${k}" ${S.day&&S.day.fecha===k?'selected':''}>Día ${fmtDay(k)}</option>`).join('');
+  if(SB){const sm=S.day&&SBDAYS[S.day.fecha];
+    $('#sync').innerHTML=(sm?`<b>Publicada para el equipo</b> · ${new Date(sm.updated_at).toLocaleString('es-PE',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}`:'Compartida por enlace')
+      +` · ${SBUSER?`${esc(SBUSER.email||'')} <button type="button" class="link" id="sbOut">Salir</button>`:`<button type="button" class="link" id="sbIn">Iniciar sesión para publicar</button>`}`;
+    const bi=$('#sbIn'),bo=$('#sbOut');if(bi)bi.onclick=()=>{$('#loginBox').hidden=false;$('#lgEmail').focus()};if(bo)bo.onclick=()=>SB.auth.signOut();return}
   const m=S.day&&SHARED[S.day.fecha];
   $('#sync').innerHTML=DB?(m?`<b>Compartida con el equipo</b> · ${new Date(m.at).toLocaleString('es-PE',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}`:'Compartida con el equipo')
     :'Guardada solo en este navegador';
@@ -303,6 +324,12 @@ async function loadShared(m){
   return CACHE[key]={fecha:m.fecha,nombre:m.nombre,tot:m.tot,at:m.at,r:parts.flatMap(x=>x.r)};
 }
 async function openFecha(f,text){
+  if(SB){const sm=SBDAYS[f];if(!sm)return;const key=f+'@'+sm.updated_at;
+    try{if(!CACHE[key]){msg(`Cargando la hoja del <b>${fmtDay(f)}</b>…`);const {data,error}=await SB.from(SB_TABLE).select('data').eq('fecha',f).single();if(error)throw error;
+        CACHE[key]={fecha:f,nombre:sm.nombre,tot:sm.tot,at:sm.updated_at,r:data.data}}
+      S.raw=null;openDay(CACHE[key],text||`Mostrando la hoja del <b>${fmtDay(f)}</b>.`)}
+    catch(e){msg(`<span class="w">No se pudo abrir la hoja del ${fmtDay(f)}.</span> Revisa tu conexión y vuelve a intentarlo.`)}
+    return}
   const m=SHARED[f];
   if(DB&&m){try{msg(`Cargando la hoja del <b>${fmtDay(f)}</b>…`);const day=await loadShared(m);S.raw=null;openDay(day,text||`Mostrando la hoja del <b>${fmtDay(f)}</b>.`);return}
     catch(e){msg(`<span class="w">No se pudo abrir la hoja del ${fmtDay(f)}.</span> Vuelve a intentarlo en un momento.`);return}}
@@ -320,6 +347,13 @@ async function publishShared(day){
   for(const k of keys.slice(KEEP_DAYS)){const mk=SHARED[k];if(!mk)continue;for(let i=0;i<mk.chunks;i++)await DB.doc(`dias/${k}/partes/p${i}`).delete();await DB.doc(`dias/${k}`).delete()}
 }
 async function storeDay(day){
+  if(SB){
+    if(!SBUSER){saveLocal(day);return '<span class="w">Solo tú la ves.</span> Inicia sesión para publicarla para el equipo y vuelve a cargarla.'}
+    $('#sync').textContent='Publicando para el equipo…';S.uploading=true;
+    const {error}=await SB.from(SB_TABLE).upsert({fecha:day.fecha,nombre:day.nombre||'',tot:day.tot,n:day.r.length,data:day.r,subido_por:SBUSER.email||''},{onConflict:'fecha'});
+    S.uploading=false;
+    if(error){saveLocal(day);renderDaySel();return `<span class="w">No se pudo publicar para el equipo (${esc(error.message)}).</span> Quedó solo en tu navegador.`}
+    await refreshSB(true);toast(`Hoja del ${fmtDay(day.fecha)} publicada para el equipo`);return 'Publicada para todo el equipo.'}
   if(!DB){const ok=saveLocal(day);renderDaySel();return ok?'Guardada en este navegador.':'<span class="w">No se pudo guardar en este navegador.</span>'}
   $('#sync').textContent='Publicando para el equipo…';S.uploading=true;
   try{await publishShared(day);S.uploading=false;renderDaySel();toast(`Hoja del ${fmtDay(day.fecha)} publicada para el equipo`);return 'Publicada para todo el equipo.'}
@@ -328,6 +362,32 @@ async function storeDay(day){
     if(c==='quota_exceeded')return '<span class="w">El espacio compartido está lleno; quedó solo en tu navegador.</span>';
     return '<span class="w">No se pudo publicar para el equipo; quedó solo en tu navegador.</span> Vuelve a cargarla en un momento.'}
 }
+async function refreshSB(quiet){
+  const {data,error}=await SB.from(SB_TABLE).select('fecha,nombre,tot,n,updated_at').order('fecha',{ascending:false}).limit(60);
+  if(error){if(!quiet)msg(`<span class="w">No se pudo conectar con la base de datos.</span> ${esc(error.message)}`);return}
+  SBDAYS={};data.forEach(m=>SBDAYS[m.fecha]=m);
+  if(S.day&&SBDAYS[S.day.fecha])S.day.at=S.day.at||SBDAYS[S.day.fecha].updated_at;
+  renderDaySel();if(S.uploading)return;
+  const latest=data[0]&&data[0].fecha;if(!latest){if(!S.day)msg('Todavía no hay hojas publicadas. Inicia sesión y carga la hoja de ruta del día.');return}
+  const cur=S.day&&S.day.fecha,cm=SBDAYS[cur];
+  if(cur===latest&&cm&&S.day.at===cm.updated_at)return;
+  if(!picked||(cur===latest&&cm&&S.day.at!==cm.updated_at))openFecha(latest,`Mostrando la hoja del <b>${fmtDay(latest)}</b>, publicada para el equipo.`);
+  else if(latest>cur)toast(`Hay una hoja nueva del ${fmtDay(latest)}. Elígela en el selector de días.`,6000);
+}
+async function startSupabase(){
+  SB=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+  const {data:{session}}=await SB.auth.getSession();SBUSER=session?session.user:null;
+  SB.auth.onAuthStateChange((_e,s)=>{SBUSER=s?s.user:null;renderDaySel()});
+  msg('Buscando la hoja más reciente…');await refreshSB();
+  // revisa si hay una hoja nueva cada 2 minutos y al volver a la pestaña
+  setInterval(()=>refreshSB(true),120000);
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refreshSB(true)});
+}
+$('#lgForm').addEventListener('submit',async e=>{e.preventDefault();$('#lgErr').textContent='';
+  const {error}=await SB.auth.signInWithPassword({email:$('#lgEmail').value.trim(),password:$('#lgPass').value});
+  if(error){$('#lgErr').textContent='Correo o contraseña incorrectos.';return}
+  $('#loginBox').hidden=true;$('#lgPass').value='';toast('Sesión iniciada. Ya puedes publicar la hoja del día.')});
+$('#lgClose').onclick=()=>{$('#loginBox').hidden=true};
 function startShared(){
   claude.use('db').then(db=>{if(!db){renderDaySel();return}DB=db;renderDaySel();
     DB.collection('dias').onSnapshot(s=>{
@@ -614,7 +674,7 @@ function showCopy(name,text){
 }
 $('#copyClose').onclick=()=>{$('#copyBox').hidden=true};
 $('#copyBox').onclick=e=>{if(e.target.id==='copyBox')$('#copyBox').hidden=true};
-document.addEventListener('keydown',e=>{if(e.key==='Escape')$('#copyBox').hidden=true});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){$('#copyBox').hidden=true;$('#loginBox').hidden=true}});
 $('#copyBtn').onclick=()=>{const ta=$('#copyArea');
   const ok=()=>toast('KML copiado. Pégalo en el Bloc de notas y guárdalo con extensión .kml.');
   try{navigator.clipboard.writeText(ta.value).then(ok,()=>{ta.focus();ta.select();toast('Selecciona todo y copia con Ctrl+C.')})}catch(e){ta.focus();ta.select();toast('Selecciona todo y copia con Ctrl+C.')}};
@@ -737,7 +797,9 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change',draw);
 new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
 document.fonts&&document.fonts.ready.then(draw);
 
-(function init(){const d=allDays(),k=Object.keys(d).sort().reverse()[0];
+(function init(){
+  if(STANDALONE&&SUPABASE_URL&&SUPABASE_ANON_KEY&&window.supabase){renderKpis();renderList();renderDetail();syncDl();startSupabase();return}
+  const d=allDays(),k=Object.keys(d).sort().reverse()[0];
   if(k)openDay(d[k],`Mostrando la hoja del <b>${fmtDay(k)}</b>. Cada día carga el Excel con el botón o arrastrándolo a la página.`);
   if(!k){renderKpis();renderList();renderDetail();msg('Carga la hoja de ruta del día (Excel o CSV) con el botón <b>Cargar hoja del día</b> o arrastrándola a la página.')}
   syncDl();renderDaySel();
