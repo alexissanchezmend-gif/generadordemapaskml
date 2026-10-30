@@ -293,8 +293,8 @@ function toast(t,ms=3200){const el=$('#toast');el.textContent=t;el.hidden=false;
 
 /* ---------- días: compartidos con el equipo (db) o, si no hay, en este navegador ---------- */
 /* ---------- Supabase: pega aquí los datos de tu proyecto (Settings → API) ---------- */
-const SUPABASE_URL='';       // ejemplo: https://abcdefghijkl.supabase.co
-const SUPABASE_ANON_KEY='';  // clave "anon public"
+const SUPABASE_URL='https://ergfrzrxxbjzckzyzcpu.supabase.co';       // ejemplo: https://abcdefghijkl.supabase.co
+const SUPABASE_ANON_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVyZ2ZyenJ4eGJqemNrenl6Y3B1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMzNzQxMTgsImV4cCI6MjEwODk1MDExOH0.TJcuSkUlTUJwZn1415tGVqC4HjEH1wNABGEgxzJQ5rM';  // clave "anon public"
 const SB_TABLE='hojas_ruta';
 let SB=null,SBUSER=null,SBDAYS={};
 let DB=null,SHARED={},CACHE={},picked=false;
